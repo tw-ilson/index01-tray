@@ -10,7 +10,7 @@ focused window.
 - **Tray icon** (StatusNotifierItem): shows whether it is listening; the tooltip shows the last
   transcript. Left click opens Settings. Right click menu: status, recent transcripts (click to
   copy), *Listen to ring* on/off, *Paste into focused window*, model choice, open the recordings
-  folder.
+  folder, *Quit Index 01* (stops the service and the icon until next login).
 - **Settings window** (egui): ring address with Bluetooth scan, recordings folder, keep-on-ring,
   transcription backend (local ONNX model, OpenAI-compatible server, or any command), model,
   language, paste shortcut, an extra command per transcript, Start/Stop, recent transcripts.

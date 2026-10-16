@@ -74,6 +74,11 @@ pub fn set_enabled(on: bool) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Stop the service for this session (it starts again at next login if enabled).
+pub fn stop() {
+    let _ = systemctl(&["stop", UNIT]);
+}
+
 /// Restart if running, so new settings take effect.
 pub fn reload_if_active() -> std::io::Result<()> {
     if state() == "active" {

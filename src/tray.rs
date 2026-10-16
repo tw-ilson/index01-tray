@@ -269,9 +269,12 @@ impl Tray for RingTray {
             }
             .into(),
             StandardItem {
-                label: "Quit tray icon".into(),
+                label: "Quit Index 01".into(),
                 icon_name: "application-exit-symbolic".into(),
-                activate: Box::new(|_: &mut Self| std::process::exit(0)),
+                activate: Box::new(|_: &mut Self| {
+                    service::stop();
+                    std::process::exit(0)
+                }),
                 ..Default::default()
             }
             .into(),
