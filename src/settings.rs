@@ -33,7 +33,11 @@ pub fn run() -> eframe::Result {
             .with_title("Index 01")
             .with_app_id("index01-tray")
             .with_inner_size([640.0, 760.0])
-            .with_min_inner_size([420.0, 400.0]),
+            .with_min_inner_size([420.0, 400.0])
+            // GNOME has no server-side decorations; winit's fallback frame looks foreign.
+            // We draw our own: rounded corners, border, header bar with close button.
+            .with_decorations(false)
+            .with_transparent(true),
         ..Default::default()
     };
     eframe::run_native(
@@ -117,36 +121,99 @@ impl eframe::App for Settings {
 
         debug_screenshot(ui.ctx());
         let p = style::Palette::get(ui.ctx());
-        egui::Frame::new().fill(p.window).show(ui, |ui| {
-            ui.set_min_size(ui.available_size());
-            self.header(ui);
-            egui::ScrollArea::vertical()
-                .auto_shrink(false)
-                .show(ui, |ui| {
-                    // libadwaita "clamp": centred column, max 600 px.
-                    let pad = ((ui.available_width() - 600.0) / 2.0).max(18.0);
-                    egui::Frame::new()
-                        .inner_margin(egui::Margin {
-                            left: pad as i8,
-                            right: pad as i8,
-                            top: 4,
-                            bottom: 24,
-                        })
-                        .show(ui, |ui| self.body(ui));
-                });
-        });
+        let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
+        let radius = if maximized { 0 } else { 12 };
+        let window = ui.max_rect();
+        egui::Frame::new()
+            .fill(p.window)
+            .stroke(egui::Stroke::new(1.0, p.card_border))
+            .corner_radius(radius)
+            .show(ui, |ui| {
+                ui.set_min_size(ui.available_size());
+                self.header(ui, radius);
+                egui::ScrollArea::vertical()
+                    .auto_shrink(false)
+                    .show(ui, |ui| {
+                        // libadwaita "clamp": centred column, max 600 px.
+                        let pad = ((ui.available_width() - 600.0) / 2.0).max(18.0);
+                        egui::Frame::new()
+                            .inner_margin(egui::Margin {
+                                left: pad as i8,
+                                right: pad as i8,
+                                top: 4,
+                                bottom: 24,
+                            })
+                            .show(ui, |ui| self.body(ui));
+                    });
+            });
+        if !maximized {
+            resize_handles(ui, window);
+        }
+    }
+
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0; 4] // transparent, so the rounded corners show the desktop
+    }
+}
+
+/// Edge/corner resize for an undecorated window.
+fn resize_handles(ui: &mut egui::Ui, r: egui::Rect) {
+    use egui::{CursorIcon as C, ResizeDirection as D};
+    let Some(pos) = ui.input(|i| i.pointer.hover_pos()) else {
+        return;
+    };
+    let m = 6.0;
+    let (l, rt, t, b) = (
+        pos.x < r.left() + m,
+        pos.x > r.right() - m,
+        pos.y < r.top() + m,
+        pos.y > r.bottom() - m,
+    );
+    let dir = match (l, rt, t, b) {
+        (true, _, true, _) => (D::NorthWest, C::ResizeNorthWest),
+        (_, true, true, _) => (D::NorthEast, C::ResizeNorthEast),
+        (true, _, _, true) => (D::SouthWest, C::ResizeSouthWest),
+        (_, true, _, true) => (D::SouthEast, C::ResizeSouthEast),
+        (true, ..) => (D::West, C::ResizeWest),
+        (_, true, ..) => (D::East, C::ResizeEast),
+        (_, _, true, _) => (D::North, C::ResizeNorth),
+        (.., true) => (D::South, C::ResizeSouth),
+        _ => return,
+    };
+    ui.ctx().set_cursor_icon(dir.1);
+    if ui.input(|i| i.pointer.primary_pressed()) {
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::BeginResize(dir.0));
     }
 }
 
 impl Settings {
-    /// Header bar: title, unsaved-changes actions.
-    fn header(&mut self, ui: &mut egui::Ui) {
+    /// Header bar, which is also the title bar: drag to move, double-click to maximize.
+    fn header(&mut self, ui: &mut egui::Ui, radius: u8) {
         let p = style::Palette::get(ui.ctx());
-        egui::Frame::new()
+        let resp = egui::Frame::new()
             .fill(p.card)
-            .inner_margin(egui::Margin::symmetric(14, 8))
+            .corner_radius(egui::CornerRadius {
+                nw: radius,
+                ne: radius,
+                sw: 0,
+                se: 0,
+            })
+            .inner_margin(egui::Margin::symmetric(10, 8))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
+                // Background drag area, registered first so the buttons on top win.
+                let bar = ui.max_rect().expand2(egui::vec2(10.0, 8.0));
+                let drag =
+                    ui.interact(bar, ui.scope_id().with("titlebar"), egui::Sense::click_and_drag());
+                if drag.drag_started_by(egui::PointerButton::Primary) {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+                if drag.double_clicked() {
+                    let max = ui.input(|i| i.viewport().maximized.unwrap_or(false));
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
+                }
                 ui.horizontal(|ui| {
                     ui.set_min_height(34.0);
                     let dirty = self.cfg != self.saved;
@@ -155,6 +222,10 @@ impl Settings {
                         self.message = None;
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if close_button(ui).clicked() {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                        ui.add_space(6.0);
                         if style::action_button(ui, "Save", p.accent, dirty).clicked() {
                             self.save();
                         }
@@ -163,16 +234,17 @@ impl Settings {
                         }
                     });
                 });
-            });
-        let r = ui.min_rect();
+            })
+            .response;
+        let r = resp.rect;
         ui.painter().hline(
             r.x_range(),
             r.bottom(),
             egui::Stroke::new(1.0, p.card_border),
         );
-        // Window title, centred over the header like a GTK header bar.
+        // Window title, centred like a GTK header bar.
         ui.painter().text(
-            egui::pos2(r.center().x, r.top() + 25.0),
+            r.center(),
             egui::Align2::CENTER_CENTER,
             "Index 01",
             egui::FontId::new(15.0, egui::FontFamily::Name("bold".into())),
@@ -530,4 +602,26 @@ fn debug_screenshot(ctx: &egui::Context) {
             }),
         ));
     }
+}
+
+/// GNOME-style round close button (the ✕ is drawn; Adwaita Sans lacks the glyph).
+fn close_button(ui: &mut egui::Ui) -> egui::Response {
+    let p = style::Palette::get(ui.ctx());
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+    let fill = if resp.is_pointer_button_down_on() {
+        p.control_hover.gamma_multiply(1.3)
+    } else if resp.hovered() {
+        p.control_hover
+    } else {
+        p.control
+    };
+    let c = rect.center();
+    ui.painter().circle_filled(c, 12.0, fill);
+    let s = egui::Stroke::new(1.6, p.fg);
+    let d = 4.0;
+    ui.painter()
+        .line_segment([c + egui::vec2(-d, -d), c + egui::vec2(d, d)], s);
+    ui.painter()
+        .line_segment([c + egui::vec2(-d, d), c + egui::vec2(d, -d)], s);
+    resp.on_hover_text("Close")
 }
