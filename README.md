@@ -11,12 +11,15 @@ focused window.
   transcript. Left click opens Settings. Right click menu: status, recent transcripts (click to
   copy), *Listen to ring* on/off, *Paste into focused window*, model choice, open the recordings
   folder, *Quit Index 01* (stops the service and the icon until next login).
-- **Settings window** (egui): ring address with Bluetooth scan, recordings folder, keep-on-ring,
+- **Settings window** (egui, styled like libadwaita: Adwaita Sans, GNOME palette, follows the
+  system dark mode and accent colour): ring address with Bluetooth scan, recordings folder, keep-on-ring,
   transcription backend (local ONNX model, OpenAI-compatible server, or any command), model,
   language, paste shortcut, an extra command per transcript, Start/Stop, recent transcripts.
 
 Settings live in `~/.config/index01/watch.env` as `INDEX01_*` variables, which the service
 reads as its `EnvironmentFile`. Saving restarts the service.
+
+![Settings window](docs/settings.png)
 
 ## Install
 

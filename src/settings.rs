@@ -2,6 +2,7 @@
 
 use crate::config::Config;
 use crate::service;
+use crate::style;
 use eframe::egui;
 use std::sync::mpsc;
 
@@ -31,13 +32,17 @@ pub fn run() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_title("Index 01")
             .with_app_id("index01-tray")
-            .with_inner_size([520.0, 600.0]),
+            .with_inner_size([640.0, 760.0])
+            .with_min_inner_size([420.0, 400.0]),
         ..Default::default()
     };
     eframe::run_native(
         "Index 01",
         options,
-        Box::new(|_cc| Ok(Box::new(Settings::new()))),
+        Box::new(|cc| {
+            style::apply(&cc.egui_ctx);
+            Ok(Box::new(Settings::new()))
+        }),
     )
 }
 
@@ -77,22 +82,6 @@ impl Settings {
             Err(e) => (false, format!("Save failed: {e}")),
         });
     }
-
-    fn text_row(ui: &mut egui::Ui, cfg: &mut Config, key: &str, label: &str, hint: &str) {
-        ui.label(label);
-        let mut v = cfg.get(key).to_owned();
-        if ui
-            .add(
-                egui::TextEdit::singleline(&mut v)
-                    .hint_text(hint)
-                    .desired_width(f32::INFINITY),
-            )
-            .changed()
-        {
-            cfg.set(key, v);
-        }
-        ui.end_row();
-    }
 }
 
 impl eframe::App for Settings {
@@ -126,193 +115,323 @@ impl eframe::App for Settings {
             }
         }
 
-        egui::Frame::central_panel(ui.style()).show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| self.body(ui));
+        debug_screenshot(ui.ctx());
+        let p = style::Palette::get(ui.ctx());
+        egui::Frame::new().fill(p.window).show(ui, |ui| {
+            ui.set_min_size(ui.available_size());
+            self.header(ui);
+            egui::ScrollArea::vertical()
+                .auto_shrink(false)
+                .show(ui, |ui| {
+                    // libadwaita "clamp": centred column, max 600 px.
+                    let pad = ((ui.available_width() - 600.0) / 2.0).max(18.0);
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin {
+                            left: pad as i8,
+                            right: pad as i8,
+                            top: 4,
+                            bottom: 24,
+                        })
+                        .show(ui, |ui| self.body(ui));
+                });
         });
     }
 }
 
 impl Settings {
+    /// Header bar: title, unsaved-changes actions.
+    fn header(&mut self, ui: &mut egui::Ui) {
+        let p = style::Palette::get(ui.ctx());
+        egui::Frame::new()
+            .fill(p.card)
+            .inner_margin(egui::Margin::symmetric(14, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.set_min_height(34.0);
+                    let dirty = self.cfg != self.saved;
+                    if dirty && ui.button("Revert").clicked() {
+                        self.cfg = self.saved.clone();
+                        self.message = None;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if style::action_button(ui, "Save", p.accent, dirty).clicked() {
+                            self.save();
+                        }
+                        if let Some((ok, m)) = &self.message {
+                            ui.colored_label(if *ok { p.dim } else { style::ERROR }, m);
+                        }
+                    });
+                });
+            });
+        let r = ui.min_rect();
+        ui.painter().hline(
+            r.x_range(),
+            r.bottom(),
+            egui::Stroke::new(1.0, p.card_border),
+        );
+        // Window title, centred over the header like a GTK header bar.
+        ui.painter().text(
+            egui::pos2(r.center().x, r.top() + 25.0),
+            egui::Align2::CENTER_CENTER,
+            "Index 01",
+            egui::FontId::new(15.0, egui::FontFamily::Name("bold".into())),
+            p.fg,
+        );
+    }
+
+    fn text_field(ui: &mut egui::Ui, cfg: &mut Config, key: &str, hint: &str, width: f32) {
+        let mut v = cfg.get(key).to_owned();
+        if style::entry(ui, &mut v, hint, width).changed() {
+            cfg.set(key, v);
+        }
+    }
+
     fn body(&mut self, ui: &mut egui::Ui) {
-        // Service
-        ui.heading("Service");
-        ui.horizontal(|ui| {
-            let (color, text) = match self.state.as_str() {
-                "active" => (egui::Color32::from_rgb(80, 180, 90), "Listening"),
-                "activating" => (egui::Color32::from_rgb(200, 170, 60), "Starting"),
-                "failed" => (egui::Color32::from_rgb(210, 80, 70), "Failed"),
-                _ => (ui.visuals().weak_text_color(), "Off"),
+        let p = style::Palette::get(ui.ctx());
+        let wide = (ui.available_width() * 0.55).clamp(200.0, 320.0);
+
+        // Status
+        let running = self.state == "active" || self.state == "activating";
+        let has_addr = !self.saved.get("INDEX01_ADDRESS").is_empty();
+        style::group(ui, "Service", |ui| {
+            let (dot, title, sub) = match self.state.as_str() {
+                "active" => (
+                    style::SUCCESS,
+                    "Listening",
+                    "Hold the ring button, speak, release.",
+                ),
+                "activating" => (style::WARNING, "Starting", "Loading the model…"),
+                "failed" => (
+                    style::ERROR,
+                    "Stopped after an error",
+                    "See the message below.",
+                ),
+                _ if !has_addr => (p.dim, "Not set up", "Choose your ring below, then Save."),
+                _ => (p.dim, "Off", "Not listening to the ring."),
             };
-            ui.colored_label(color, "●");
-            ui.label(text);
-            ui.add_space(12.0);
-            let running = self.state == "active" || self.state == "activating";
-            let has_addr = !self.saved.get("INDEX01_ADDRESS").is_empty();
-            let btn = if running { "Stop" } else { "Start" };
-            let resp = ui.add_enabled(has_addr || running, egui::Button::new(btn));
-            if resp.clicked() {
-                if let Err(e) = service::set_enabled(!running) {
-                    self.message = Some((false, format!("service: {e}")));
+            style::row(ui, true, "", None, |ui| {
+                let mut on = running;
+                if ui
+                    .add_enabled_ui(has_addr || running, |ui| style::switch(ui, &mut on))
+                    .inner
+                    .changed()
+                {
+                    if let Err(e) = service::set_enabled(on) {
+                        self.message = Some((false, format!("service: {e}")));
+                    }
+                    self.state = service::state();
                 }
-                self.state = service::state();
-            }
-            if !has_addr {
-                ui.weak("Set and save a ring address first.");
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let (r, _) =
+                        ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                    ui.painter().circle_filled(r.center(), 5.0, dot);
+                    ui.add_space(4.0);
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.label(egui::RichText::new(title).strong());
+                        ui.label(egui::RichText::new(sub).small().color(p.dim));
+                    });
+                });
+            });
+            if let Some(e) = &self.log_error {
+                style::row(ui, false, "Last error", None, |ui| {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(e).small().color(style::ERROR))
+                            .truncate(),
+                    )
+                    .on_hover_text(e);
+                });
             }
         });
-        ui.weak(
-            "Runs `index01 watch` as the systemd user service index01-watch, started at login.",
-        );
-        if let Some(e) = &self.log_error {
-            ui.colored_label(egui::Color32::from_rgb(210, 80, 70), e);
-        }
-        ui.add_space(8.0);
 
         // Ring
-        ui.heading("Ring");
-        egui::Grid::new("ring")
-            .num_columns(2)
-            .spacing([10.0, 6.0])
-            .show(ui, |ui| {
-                ui.label("Address");
-                ui.horizontal(|ui| {
-                    let mut v = self.cfg.get("INDEX01_ADDRESS").to_owned();
-                    if ui
-                        .add(
-                            egui::TextEdit::singleline(&mut v)
-                                .hint_text("AA:BB:CC:DD:EE:FF")
-                                .desired_width(170.0),
-                        )
-                        .changed()
-                    {
-                        self.cfg.set("INDEX01_ADDRESS", v.trim().to_uppercase());
-                    }
+        style::group(ui, "Ring", |ui| {
+            style::row(
+                ui,
+                true,
+                "Address",
+                Some("Tap the ring to wake it before scanning"),
+                |ui| {
                     if self.scan_rx.is_some() {
                         ui.spinner();
-                        ui.label("Scanning…");
-                    } else if ui
-                        .button("Scan")
-                        .on_hover_text("Tap the ring first to wake it")
-                        .clicked()
-                    {
+                    } else if ui.button("Scan").clicked() {
                         let (tx, rx) = mpsc::channel();
                         std::thread::spawn(move || {
                             let _ = tx.send(service::scan_rings(8));
                         });
                         self.scan_rx = Some(rx);
+                        self.message = None;
                     }
-                });
-                ui.end_row();
-                for (addr, line) in self.rings.clone() {
-                    ui.label("");
-                    if ui
-                        .selectable_label(self.cfg.get("INDEX01_ADDRESS") == addr, &line)
-                        .clicked()
-                    {
+                    let mut v = self.cfg.get("INDEX01_ADDRESS").to_owned();
+                    if style::entry(ui, &mut v, "AA:BB:CC:DD:EE:FF", 170.0).changed() {
+                        self.cfg.set("INDEX01_ADDRESS", v.trim().to_uppercase());
+                    }
+                },
+            );
+            for (addr, line) in self.rings.clone() {
+                let sel = self.cfg.get("INDEX01_ADDRESS") == addr;
+                style::row(ui, false, &line, None, |ui| {
+                    if sel {
+                        ui.label(egui::RichText::new("✔").color(p.accent));
+                    } else if ui.button("Use").clicked() {
                         self.cfg.set("INDEX01_ADDRESS", &addr);
                     }
-                    ui.end_row();
+                });
+            }
+            style::row(ui, false, "Recordings folder", None, |ui| {
+                if ui.button("Open").clicked() {
+                    let out = std::path::PathBuf::from(self.cfg.get("INDEX01_OUT"));
+                    let _ = std::fs::create_dir_all(&out);
+                    service::open(&out);
                 }
-                Self::text_row(
-                    ui,
-                    &mut self.cfg,
-                    "INDEX01_OUT",
-                    "Recordings folder",
-                    "~/Index01",
-                );
-                ui.label("");
-                let mut keep = self.cfg.flag("INDEX01_KEEP");
-                if ui
-                    .checkbox(
-                        &mut keep,
-                        "Keep recordings on the ring (don't erase after download)",
-                    )
-                    .changed()
-                {
-                    self.cfg.set_flag("INDEX01_KEEP", keep);
-                }
-                ui.end_row();
+                Self::text_field(ui, &mut self.cfg, "INDEX01_OUT", "~/Index01", wide - 70.0);
             });
-        ui.add_space(8.0);
+            style::row(
+                ui,
+                false,
+                "Keep recordings on the ring",
+                Some("Otherwise they are erased after download"),
+                |ui| {
+                    let mut keep = self.cfg.flag("INDEX01_KEEP");
+                    if style::switch(ui, &mut keep).changed() {
+                        self.cfg.set_flag("INDEX01_KEEP", keep);
+                    }
+                },
+            );
+        });
 
         // Transcription
-        ui.heading("Transcription");
-        egui::Grid::new("stt").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-            ui.label("Backend");
+        style::group(ui, "Transcription", |ui| {
             let mut backend = self.cfg.get("INDEX01_BACKEND").to_owned();
             if backend.is_empty() {
                 backend = "local".into();
             }
-            egui::ComboBox::from_id_salt("backend")
-                .selected_text(match backend.as_str() {
-                    "local" => "Local model (in-process)",
-                    "openai" => "OpenAI-compatible server",
-                    "command" => "Command",
-                    other => other,
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut backend, "local".into(), "Local model (in-process)");
-                    ui.selectable_value(&mut backend, "openai".into(), "OpenAI-compatible server");
-                    ui.selectable_value(&mut backend, "command".into(), "Command");
-                });
+            style::row(ui, true, "Engine", None, |ui| {
+                egui::ComboBox::from_id_salt("backend")
+                    .width(wide)
+                    .selected_text(match backend.as_str() {
+                        "local" => "Local model",
+                        "openai" => "OpenAI-compatible server",
+                        "command" => "Custom command",
+                        other => other,
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut backend, "local".into(), "Local model");
+                        ui.selectable_value(
+                            &mut backend,
+                            "openai".into(),
+                            "OpenAI-compatible server",
+                        );
+                        ui.selectable_value(&mut backend, "command".into(), "Custom command");
+                    });
+            });
             self.cfg.set("INDEX01_BACKEND", &backend);
-            ui.end_row();
 
             match backend.as_str() {
                 "local" => {
-                    ui.label("Model");
                     let mut m = self.cfg.get("INDEX01_MODEL_DIR").to_owned();
                     if m.is_empty() {
                         m = "auto".into();
                     }
-                    ui.horizontal(|ui| {
-                        egui::ComboBox::from_id_salt("model").selected_text(&m).width(220.0).show_ui(ui, |ui| {
-                            ui.selectable_value(&mut m, "auto".into(), "auto (Parakeet v2 first)");
-                            for spec in &self.models {
-                                ui.selectable_value(&mut m, spec.clone(), spec);
-                            }
-                        });
-                        if ui.small_button("Folder…").on_hover_text("Use any ONNX model directory").clicked()
-                            && let Some(d) = pick_folder() {
+                    style::row(
+                        ui,
+                        false,
+                        "Model",
+                        Some("Reuses Handy and Spokenly downloads"),
+                        |ui| {
+                            if ui
+                                .button("Browse…")
+                                .on_hover_text("Any ONNX model folder")
+                                .clicked()
+                                && let Some(d) = pick_folder()
+                            {
                                 m = d;
                             }
-                    });
+                            let shown = if m == "auto" {
+                                "Automatic".to_owned()
+                            } else {
+                                m.clone()
+                            };
+                            egui::ComboBox::from_id_salt("model")
+                                .width(wide - 90.0)
+                                .selected_text(shown)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut m,
+                                        "auto".into(),
+                                        "Automatic (Parakeet v2 first)",
+                                    );
+                                    for spec in &self.models {
+                                        ui.selectable_value(&mut m, spec.clone(), spec);
+                                    }
+                                });
+                        },
+                    );
                     self.cfg.set("INDEX01_MODEL_DIR", &m);
-                    ui.end_row();
-                    ui.label("");
-                    ui.weak("Reuses models downloaded by Handy and Spokenly.\nParakeet, Canary, Cohere, SenseVoice and GigaAM are supported.");
-                    ui.end_row();
                 }
                 "openai" => {
-                    Self::text_row(ui, &mut self.cfg, "INDEX01_URL", "Server URL", "http://localhost:8000/v1");
-                    Self::text_row(ui, &mut self.cfg, "INDEX01_MODEL", "Model", "openai/whisper-large-v3-turbo");
-                    Self::text_row(ui, &mut self.cfg, "INDEX01_API_KEY", "API key", "(optional)");
+                    style::row(ui, false, "Server URL", None, |ui| {
+                        Self::text_field(
+                            ui,
+                            &mut self.cfg,
+                            "INDEX01_URL",
+                            "http://localhost:8000/v1",
+                            wide,
+                        )
+                    });
+                    style::row(ui, false, "Model", None, |ui| {
+                        Self::text_field(
+                            ui,
+                            &mut self.cfg,
+                            "INDEX01_MODEL",
+                            "openai/whisper-large-v3-turbo",
+                            wide,
+                        )
+                    });
+                    style::row(ui, false, "API key", Some("Optional"), |ui| {
+                        Self::text_field(ui, &mut self.cfg, "INDEX01_API_KEY", "", wide)
+                    });
+                    style::row(
+                        ui,
+                        false,
+                        "Vocabulary hint",
+                        Some("Optional prompt"),
+                        |ui| Self::text_field(ui, &mut self.cfg, "INDEX01_PROMPT", "", wide),
+                    );
                 }
                 _ => {
-                    Self::text_row(ui, &mut self.cfg, "INDEX01_COMMAND", "Command", "python3 my_stt.py  (gets the WAV path)");
+                    style::row(
+                        ui,
+                        false,
+                        "Command",
+                        Some("Gets the WAV path as $1, prints text"),
+                        |ui| {
+                            Self::text_field(
+                                ui,
+                                &mut self.cfg,
+                                "INDEX01_COMMAND",
+                                "python3 stt.py",
+                                wide,
+                            )
+                        },
+                    );
                 }
             }
-            Self::text_row(ui, &mut self.cfg, "INDEX01_LANGUAGE", "Language", "auto, or e.g. en");
-            Self::text_row(ui, &mut self.cfg, "INDEX01_PROMPT", "Vocabulary hint", "(optional, server backends)");
+            style::row(ui, false, "Language", None, |ui| {
+                Self::text_field(ui, &mut self.cfg, "INDEX01_LANGUAGE", "Automatic", 120.0)
+            });
         });
-        ui.add_space(8.0);
 
         // Output
-        ui.heading("Output");
-        egui::Grid::new("out")
-            .num_columns(2)
-            .spacing([10.0, 6.0])
-            .show(ui, |ui| {
-                ui.label("");
+        style::group(ui, "Output", |ui| {
+            style::row(ui, true, "Paste into the focused window", None, |ui| {
                 let mut paste = self.cfg.flag("INDEX01_PASTE");
-                if ui
-                    .checkbox(&mut paste, "Paste into the focused window")
-                    .changed()
-                {
+                if style::switch(ui, &mut paste).changed() {
                     self.cfg.set_flag("INDEX01_PASTE", paste);
                 }
-                ui.end_row();
-                ui.label("Paste shortcut");
+            });
+            if self.cfg.flag("INDEX01_PASTE") {
                 let mut k = self.cfg.get("INDEX01_PASTE_KEYS").to_owned();
                 if k.is_empty() {
                     k = "ctrl-v".into();
@@ -323,58 +442,59 @@ impl Settings {
                     .map(|p| p.1)
                     .unwrap_or(&k)
                     .to_owned();
-                egui::ComboBox::from_id_salt("keys")
-                    .selected_text(label)
-                    .show_ui(ui, |ui| {
-                        for (v, l) in PASTE_KEYS {
-                            ui.selectable_value(&mut k, v.into(), l);
-                        }
-                    });
+                style::row(ui, false, "Paste shortcut", None, |ui| {
+                    egui::ComboBox::from_id_salt("keys")
+                        .width(wide)
+                        .selected_text(label)
+                        .show_ui(ui, |ui| {
+                            for (v, l) in PASTE_KEYS {
+                                ui.selectable_value(&mut k, v.into(), l);
+                            }
+                        });
+                });
                 self.cfg.set("INDEX01_PASTE_KEYS", &k);
-                ui.end_row();
-                Self::text_row(
-                    ui,
-                    &mut self.cfg,
-                    "INDEX01_EXEC",
-                    "Also run",
-                    "shell command; text on stdin, e.g. cat >> ~/notes.md",
-                );
-            });
-        ui.add_space(10.0);
-
-        // Save
-        ui.horizontal(|ui| {
-            let dirty = self.cfg != self.saved;
-            if ui.add_enabled(dirty, egui::Button::new("Save")).clicked() {
-                self.save();
             }
-            if ui.add_enabled(dirty, egui::Button::new("Revert")).clicked() {
-                self.cfg = self.saved.clone();
-            }
-            if let Some((ok, m)) = &self.message {
-                let c = if *ok {
-                    egui::Color32::from_rgb(80, 180, 90)
-                } else {
-                    egui::Color32::from_rgb(210, 80, 70)
-                };
-                ui.colored_label(c, m);
-            }
+            style::row(
+                ui,
+                false,
+                "Also run",
+                Some("Shell command, transcript on stdin"),
+                |ui| Self::text_field(ui, &mut self.cfg, "INDEX01_EXEC", "cat >> ~/notes.md", wide),
+            );
         });
-        ui.add_space(10.0);
 
         // Recent
-        ui.heading("Recent transcripts");
-        if self.transcripts.is_empty() {
-            ui.weak("None yet. Hold the ring button, speak, and release.");
-        }
-        for t in self.transcripts.iter().rev() {
-            ui.horizontal_wrapped(|ui| {
-                if ui.small_button("Copy").clicked() {
-                    service::copy(t);
+        style::group(ui, "Recent transcripts", |ui| {
+            if self.transcripts.is_empty() {
+                style::row(ui, true, "Nothing yet", None, |_| {});
+            }
+            for (i, t) in self.transcripts.iter().rev().enumerate() {
+                if i > 0 {
+                    let y = ui.cursor().top();
+                    let x = ui.max_rect().x_range();
+                    ui.painter().hline(
+                        egui::Rangef::new(x.min - 14.0, x.max + 14.0),
+                        y,
+                        egui::Stroke::new(1.0, p.card_border),
+                    );
                 }
-                ui.label(t);
-            });
-        }
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Copy").clicked() {
+                            service::copy(t);
+                        }
+                        ui.with_layout(
+                            egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+                            |ui| {
+                                ui.label(t);
+                            },
+                        );
+                    });
+                });
+                ui.add_space(10.0);
+            }
+        });
     }
 }
 
@@ -390,4 +510,24 @@ fn pick_folder() -> Option<String> {
         .ok()?;
     let s = String::from_utf8_lossy(&o.stdout).trim().to_owned();
     (o.status.success() && !s.is_empty()).then_some(s)
+}
+
+/// INDEX01_TRAY_SCREENSHOT=/path.ppm: save one frame and exit (for docs and visual checks).
+fn debug_screenshot(ctx: &egui::Context) {
+    let Some(path) = std::env::var_os("INDEX01_TRAY_SCREENSHOT") else {
+        return;
+    };
+    ctx.request_repaint();
+    if ctx.cumulative_frame_nr() == 20 {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(
+            egui::ScreenshotCallback::new(move |img| {
+                let mut out = format!("P6 {} {} 255\n", img.size[0], img.size[1]).into_bytes();
+                for px in &img.pixels {
+                    out.extend_from_slice(&[px.r(), px.g(), px.b()]);
+                }
+                let _ = std::fs::write(&path, out);
+                std::process::exit(0);
+            }),
+        ));
+    }
 }

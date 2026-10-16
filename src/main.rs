@@ -8,6 +8,7 @@
 mod config;
 mod service;
 mod settings;
+mod style;
 mod tray;
 
 use config::{Config, config_dir, home};
