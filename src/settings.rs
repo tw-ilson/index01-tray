@@ -204,8 +204,11 @@ impl Settings {
                 ui.set_width(ui.available_width());
                 // Background drag area, registered first so the buttons on top win.
                 let bar = ui.max_rect().expand2(egui::vec2(10.0, 8.0));
-                let drag =
-                    ui.interact(bar, ui.scope_id().with("titlebar"), egui::Sense::click_and_drag());
+                let drag = ui.interact(
+                    bar,
+                    ui.scope_id().with("titlebar"),
+                    egui::Sense::click_and_drag(),
+                );
                 if drag.drag_started_by(egui::PointerButton::Primary) {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }

@@ -1,6 +1,7 @@
 //! index01-tray: tray icon and settings window for `index01 watch` (Index 01 ring transcription).
 //!
 //!   index01-tray            run the tray icon (left click: settings; right click: menu)
+//!   index01-tray launch     app-menu entry: start the service and the tray icon
 //!   index01-tray settings   open the settings window
 //!   index01-tray install    write the systemd unit, default settings, autostart and menu entries
 //!   index01-tray uninstall  stop the service and remove those files (settings are kept)
@@ -20,7 +21,7 @@ fn desktop_entry(autostart: bool) -> String {
     let (exec, name) = if autostart {
         (format!("{}", exe.display()), "Index 01 tray")
     } else {
-        (format!("{} settings", exe.display()), "Index 01")
+        (format!("{} launch", exe.display()), "Index 01")
     };
     format!(
         "[Desktop Entry]
@@ -106,7 +107,38 @@ fn uninstall() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Held for the tray's lifetime so only one icon runs.
+fn tray_lock() -> Option<std::fs::File> {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let f = std::fs::File::create(dir.join("index01-tray.lock")).ok()?;
+    f.try_lock().ok().map(|()| f)
+}
+
+/// App-menu launch: start listening (if a ring is set), make sure the tray icon is up,
+/// and open Settings when there is nothing to listen to yet or the icon was already running.
+fn launch() -> Result<(), Box<dyn std::error::Error>> {
+    let configured = !Config::load().get("INDEX01_ADDRESS").is_empty();
+    if configured && service::state() != "active" {
+        service::set_enabled(true)?;
+    }
+    let tray_running = tray_lock().is_none();
+    let exe = std::env::current_exe()?;
+    if !tray_running {
+        std::process::Command::new(&exe).spawn()?;
+    }
+    if !configured || tray_running {
+        std::process::Command::new(&exe).arg("settings").spawn()?;
+    }
+    Ok(())
+}
+
 fn run_tray() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(_lock) = tray_lock() else {
+        eprintln!("index01-tray is already running");
+        return Ok(());
+    };
     let tray = tray::RingTray::new();
     let mut last = tray.snapshot();
     let handle = tray.spawn()?;
@@ -127,11 +159,12 @@ fn main() {
     let cmd = std::env::args().nth(1).unwrap_or_default();
     let res: Result<(), Box<dyn std::error::Error>> = match cmd.as_str() {
         "" | "tray" => run_tray(),
+        "launch" => launch(),
         "settings" => settings::run().map_err(|e| e.to_string().into()),
         "install" => install(),
         "uninstall" => uninstall(),
         _ => {
-            eprintln!("usage: index01-tray [tray | settings | install | uninstall]");
+            eprintln!("usage: index01-tray [tray | launch | settings | install | uninstall]");
             std::process::exit(2);
         }
     };

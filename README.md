@@ -33,7 +33,8 @@ index01-tray &
 ```
 
 `install` writes the systemd unit, default settings, a login autostart entry for the tray and an
-app-menu entry (*Index 01*, opens Settings). It starts the service if a ring address is set. On
+app-menu entry (*Index 01*: starts the service and the tray icon; opens Settings if no ring is set
+yet or the icon is already running). It starts the service if a ring address is set. On
 GNOME it enables the AppIndicator extension, which tray icons need (Fedora:
 `gnome-shell-extension-appindicator`).
 
@@ -43,6 +44,7 @@ GNOME it enables the AppIndicator extension, which tray icons need (Fedora:
 
 ```
 index01-tray            tray icon
+index01-tray launch     start service + tray icon (app menu)
 index01-tray settings   settings window
 index01-tray install    unit + autostart + menu entry, start service
 index01-tray uninstall
