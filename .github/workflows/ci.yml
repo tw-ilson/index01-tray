@@ -1,0 +1,28 @@
+name: ci
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libdbus-1-dev libxkbcommon-dev libgl1-mesa-dev libwayland-dev xvfb
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - run: cargo test --release --locked
+      - run: cargo clippy --release --locked -- -D warnings
+      - name: Settings window renders (X11, software GL)
+        run: |
+          INDEX01_TRAY_SCREENSHOT=$PWD/settings.ppm LIBGL_ALWAYS_SOFTWARE=1 timeout 60 xvfb-run -a -s "-screen 0 1280x1024x24" target/release/index01-tray settings
+          test -s settings.ppm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: settings-${{ matrix.os }}
+          path: settings.ppm
