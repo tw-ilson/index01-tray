@@ -25,6 +25,11 @@ pub struct Settings {
     scan_rx: Option<mpsc::Receiver<ScanResult>>,
     rings: Vec<(String, String)>,
     last_poll: f64,
+    /// Whether this computer is bonded with the saved ring.
+    paired: bool,
+    /// A running pair/unpair job.
+    job_rx: Option<mpsc::Receiver<Result<String, String>>>,
+    confirm_unpair: bool,
 }
 
 pub fn run() -> eframe::Result {
@@ -65,6 +70,9 @@ impl Settings {
             scan_rx: None,
             rings: vec![],
             last_poll: 0.0,
+            paired: service::is_paired(cfg_addr(&Config::load())),
+            job_rx: None,
+            confirm_unpair: false,
         }
     }
 
@@ -96,6 +104,20 @@ impl eframe::App for Settings {
             self.last_poll = now;
             self.state = service::state();
             (self.transcripts, self.log_error) = service::recent_log();
+            if self.job_rx.is_none() {
+                self.paired = service::is_paired(cfg_addr(&self.saved));
+            }
+        }
+        if let Some(rx) = &self.job_rx
+            && let Ok(r) = rx.try_recv()
+        {
+            self.job_rx = None;
+            self.paired = service::is_paired(cfg_addr(&self.saved));
+            self.state = service::state();
+            self.message = Some(match r {
+                Ok(m) => (true, m),
+                Err(e) => (false, e),
+            });
         }
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_secs(2));
@@ -344,6 +366,9 @@ impl Settings {
                     }
                 },
             );
+            if has_addr {
+                self.pairing_row(ui);
+            }
             for (addr, line) in self.rings.clone() {
                 let sel = self.cfg.get("INDEX01_ADDRESS") == addr;
                 style::row(ui, false, &line, None, |ui| {
@@ -574,6 +599,62 @@ impl Settings {
 }
 
 /// Folder picker via zenity (GNOME); None if unavailable or cancelled.
+fn cfg_addr(cfg: &Config) -> &str {
+    cfg.get("INDEX01_ADDRESS")
+}
+
+impl Settings {
+    /// Pair with / unpair from the saved ring, so it can move between computers.
+    fn pairing_row(&mut self, ui: &mut egui::Ui) {
+        let addr = cfg_addr(&self.saved).to_owned();
+        let (title, sub) = if self.paired {
+            (
+                "Paired with this computer",
+                "Unpair to use the ring with another computer or phone",
+            )
+        } else {
+            (
+                "Not paired with this computer",
+                "Wake the ring, then Pair. If it is still paired elsewhere, unpair it there first",
+            )
+        };
+        style::row(ui, false, title, Some(sub), |ui| {
+            if self.job_rx.is_some() {
+                ui.spinner();
+                return;
+            }
+            let run = |f: fn(&str) -> Result<String, String>| {
+                let (tx, rx) = mpsc::channel();
+                let addr = addr.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send(f(&addr));
+                });
+                rx
+            };
+            if !self.paired {
+                if style::action_button(ui, "Pair", style::accent(), true).clicked() {
+                    self.job_rx = Some(run(|a| {
+                        let m = service::pair(a)?;
+                        service::set_enabled(true).map_err(|e| e.to_string())?;
+                        Ok(m + " Listening.")
+                    }));
+                    self.message = Some((true, "Pairing… tap the ring to wake it.".into()));
+                }
+            } else if self.confirm_unpair {
+                if style::action_button(ui, "Unpair", style::ERROR, true).clicked() {
+                    self.confirm_unpair = false;
+                    self.job_rx = Some(run(service::unpair));
+                }
+                if ui.button("Cancel").clicked() {
+                    self.confirm_unpair = false;
+                }
+            } else if ui.button("Unpair…").clicked() {
+                self.confirm_unpair = true;
+            }
+        });
+    }
+}
+
 fn pick_folder() -> Option<String> {
     let o = std::process::Command::new("zenity")
         .args([

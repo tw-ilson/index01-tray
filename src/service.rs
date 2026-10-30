@@ -166,6 +166,77 @@ pub fn scan_rings(seconds: u32) -> Result<Vec<(String, String)>, String> {
         .collect())
 }
 
+fn bluetoothctl(args: &[&str]) -> Result<String, String> {
+    let o = Command::new("bluetoothctl")
+        .args(args)
+        .output()
+        .map_err(|e| format!("bluetoothctl: {e}"))?;
+    Ok(String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr))
+}
+
+/// Whether this computer holds a bond with the ring (BlueZ "Paired: yes").
+pub fn is_paired(addr: &str) -> bool {
+    bluetoothctl(&["info", addr]).is_ok_and(|s| s.lines().any(|l| l.trim() == "Paired: yes"))
+}
+
+/// The ring only accepts button recordings from a central that sent its identity key (IRK),
+/// which BlueZ does only with `Privacy = device` (or `network`) in /etc/bluetooth/main.conf.
+pub fn privacy_enabled() -> bool {
+    std::fs::read_to_string("/etc/bluetooth/main.conf").is_ok_and(|s| {
+        s.lines().any(|l| {
+            let l = l.trim();
+            !l.starts_with('#')
+                && l.split_once('=').is_some_and(|(k, v)| {
+                    k.trim() == "Privacy" && matches!(v.trim(), "device" | "network")
+                })
+        })
+    })
+}
+
+/// Forget the ring on this computer. Stops the service first so it doesn't reconnect.
+pub fn unpair(addr: &str) -> Result<String, String> {
+    stop();
+    let out = bluetoothctl(&["remove", addr])?;
+    if is_paired(addr) {
+        return Err(out.trim().to_owned());
+    }
+    Ok("Unpaired from this computer.".into())
+}
+
+/// Scan for the ring, bond with it (Just Works) and trust it. The ring must be awake and
+/// not bonded to another device.
+pub fn pair(addr: &str) -> Result<String, String> {
+    if !privacy_enabled() {
+        return Err(
+            "Bluetooth privacy is off, so the ring would pair but ignore its button. \
+                    Set \"Privacy = device\" in /etc/bluetooth/main.conf, run \
+                    \"sudo systemctl restart bluetooth\", then pair again."
+                .into(),
+        );
+    }
+    stop();
+    // Pairing needs BlueZ to have seen the ring recently.
+    bluetoothctl(&["--timeout", "8", "scan", "le"])?;
+    let out = bluetoothctl(&[
+        "--agent",
+        "NoInputNoOutput",
+        "--timeout",
+        "30",
+        "pair",
+        addr,
+    ])?;
+    if !is_paired(addr) {
+        let why = out
+            .lines()
+            .rev()
+            .find(|l| l.contains("Failed") || l.contains("not available") || l.contains("Error"))
+            .unwrap_or("no reply; tap the ring to wake it");
+        return Err(format!("Pairing failed: {}", why.trim()));
+    }
+    bluetoothctl(&["trust", addr])?;
+    Ok("Paired with this computer.".into())
+}
+
 pub fn open(path: &std::path::Path) {
     let _ = Command::new("xdg-open").arg(path).spawn();
 }
