@@ -193,14 +193,25 @@ pub fn privacy_enabled() -> bool {
     })
 }
 
-/// Forget the ring on this computer. Stops the service first so it doesn't reconnect.
+/// Clear the ring's bond (erase + reboot, so no SOS reset is needed) and forget it here.
+/// Waits for a ring button press. Stops the service first so it doesn't hold the link.
 pub fn unpair(addr: &str) -> Result<String, String> {
     stop();
-    let out = bluetoothctl(&["remove", addr])?;
+    let o = Command::new("timeout")
+        .arg("120")
+        .arg(index01_bin())
+        .args(["unpair", addr, "--yes"])
+        .output()
+        .map_err(|e| format!("index01: {e}"))?;
+    let out = String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr);
     if is_paired(addr) {
-        return Err(out.trim().to_owned());
+        let why = out
+            .lines()
+            .last()
+            .unwrap_or("no press seen within 2 minutes");
+        return Err(format!("Unpair failed: {}", why.trim()));
     }
-    Ok("Unpaired from this computer.".into())
+    Ok("Unpaired. The ring can now pair with any computer or phone.".into())
 }
 
 /// Scan for the ring, bond with it (Just Works) and trust it. The ring must be awake and
@@ -215,8 +226,21 @@ pub fn pair(addr: &str) -> Result<String, String> {
         );
     }
     stop();
-    // Pairing needs BlueZ to have seen the ring recently.
-    bluetoothctl(&["--timeout", "8", "scan", "le"])?;
+    // Pairing needs BlueZ to have just seen the ring; wait up to a minute for a button press.
+    let mut scan = Command::new("bluetoothctl")
+        .args(["--timeout", "60", "scan", "le"])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("bluetoothctl: {e}"))?;
+    let seen = (0..60).any(|_| {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        bluetoothctl(&["info", addr]).is_ok_and(|s| s.contains("RSSI:"))
+    });
+    if !seen {
+        let _ = scan.kill();
+        let _ = scan.wait();
+        return Err("Ring not seen within a minute; press its button and try again.".into());
+    }
     let out = bluetoothctl(&[
         "--agent",
         "NoInputNoOutput",
@@ -225,6 +249,8 @@ pub fn pair(addr: &str) -> Result<String, String> {
         "pair",
         addr,
     ])?;
+    let _ = scan.kill();
+    let _ = scan.wait();
     if !is_paired(addr) {
         let why = out
             .lines()

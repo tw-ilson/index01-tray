@@ -610,12 +610,12 @@ impl Settings {
         let (title, sub) = if self.paired {
             (
                 "Paired with this computer",
-                "Unpair to use the ring with another computer or phone",
+                "Unpair to use the ring with another computer or phone (no SOS reset needed)",
             )
         } else {
             (
                 "Not paired with this computer",
-                "Wake the ring, then Pair. If it is still paired elsewhere, unpair it there first",
+                "Press the ring button, then Pair. If it is paired elsewhere, unpair it there first",
             )
         };
         style::row(ui, false, title, Some(sub), |ui| {
@@ -638,12 +638,13 @@ impl Settings {
                         service::set_enabled(true).map_err(|e| e.to_string())?;
                         Ok(m + " Listening.")
                     }));
-                    self.message = Some((true, "Pairing… tap the ring to wake it.".into()));
+                    self.message = Some((true, "Pairing… press the ring button.".into()));
                 }
             } else if self.confirm_unpair {
                 if style::action_button(ui, "Unpair", style::ERROR, true).clicked() {
                     self.confirm_unpair = false;
                     self.job_rx = Some(run(service::unpair));
+                    self.message = Some((true, "Unpairing… press the ring button.".into()));
                 }
                 if ui.button("Cancel").clicked() {
                     self.confirm_unpair = false;
