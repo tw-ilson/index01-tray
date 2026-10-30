@@ -153,6 +153,7 @@ impl eframe::App for Settings {
             .show(ui, |ui| {
                 ui.set_min_size(ui.available_size());
                 self.header(ui, radius);
+                self.banner(ui);
                 egui::ScrollArea::vertical()
                     .auto_shrink(false)
                     .show(ui, |ui| {
@@ -254,9 +255,6 @@ impl Settings {
                         if style::action_button(ui, "Save", p.accent, dirty).clicked() {
                             self.save();
                         }
-                        if let Some((ok, m)) = &self.message {
-                            ui.colored_label(if *ok { p.dim } else { style::ERROR }, m);
-                        }
                     });
                 });
             })
@@ -275,6 +273,33 @@ impl Settings {
             egui::FontId::new(15.0, egui::FontFamily::Name("bold".into())),
             p.fg,
         );
+    }
+
+    /// Status/error line under the header bar (libadwaita AdwBanner style), so it never
+    /// collides with the centred title.
+    fn banner(&mut self, ui: &mut egui::Ui) {
+        let Some((ok, m)) = self.message.clone() else {
+            return;
+        };
+        let p = style::Palette::get(ui.ctx());
+        let tint = if ok { p.accent } else { style::ERROR };
+        egui::Frame::new()
+            .fill(tint.gamma_multiply(0.15))
+            .inner_margin(egui::Margin::symmetric(14, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    let color = if ok { p.fg } else { tint };
+                    ui.scope(|ui| {
+                        ui.set_max_width(ui.available_width() - 30.0);
+                        ui.add(egui::Label::new(egui::RichText::new(m).color(color)).wrap());
+                    });
+                    ui.add_space((ui.available_width() - 24.0).max(0.0));
+                    if self.job_rx.is_none() && close_button(ui).clicked() {
+                        self.message = None;
+                    }
+                });
+            });
     }
 
     fn text_field(ui: &mut egui::Ui, cfg: &mut Config, key: &str, hint: &str, width: f32) {
