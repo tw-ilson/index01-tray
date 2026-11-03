@@ -95,6 +95,66 @@ pub fn state() -> String {
         .unwrap_or_else(|_| "unknown".into())
 }
 
+/// Voice assistant mode: a drop-in that sends recordings to LFM3-Omni
+/// (haversine/omni/ring_omni.py) instead of pasting the transcript.
+/// Same file `index01-mode assistant|dictate` toggles.
+fn assistant_dropin() -> PathBuf {
+    config_dir().join("systemd/user/index01-watch.service.d/omni.conf")
+}
+
+/// Ring button modes: (id, label, description).
+pub const MODES: [(&str, &str, &str); 3] = [
+    ("dictate", "Dictation", "Transcribe your speech"),
+    ("omni", "Voice assistant (Omni)", "LFM3-Omni hears you and answers aloud, all local"),
+    ("hermes", "Voice assistant (Hermes)", "Omni hears and speaks; Hermes Agent answers"),
+];
+
+fn omni_env() -> PathBuf {
+    config_dir().join("index01/omni.env")
+}
+
+/// Current ring mode id from MODES.
+pub fn ring_mode() -> &'static str {
+    if !assistant_dropin().is_file() {
+        return "dictate";
+    }
+    let env = std::fs::read_to_string(omni_env()).unwrap_or_default();
+    if env.lines().any(|l| l.trim() == "OMNI_BRAIN=hermes") {
+        "hermes"
+    } else {
+        "omni"
+    }
+}
+
+pub fn set_ring_mode(mode: &str) -> std::io::Result<()> {
+    if mode == ring_mode() {
+        return Ok(());
+    }
+    let p = assistant_dropin();
+    if mode != "dictate" {
+        std::fs::write(
+            omni_env(),
+            format!(
+                "INDEX01_PASTE=false\nINDEX01_EXEC=/usr/bin/python3 {}\nOMNI_BRAIN={mode}\n",
+                home()
+                    .join("develop/projects/haversine/omni/ring_omni.py")
+                    .display()
+            ),
+        )?;
+        std::fs::create_dir_all(p.parent().unwrap())?;
+        std::fs::write(
+            &p,
+            "# Assistant mode: ring recordings go to LFM3-Omni and the reply is spoken.\n\
+             [Unit]\nWants=llama-omni.service\nAfter=llama-omni.service\n\n\
+             [Service]\nEnvironmentFile=%h/.config/index01/omni.env\n",
+        )?;
+    } else if p.is_file() {
+        std::fs::remove_file(&p)?;
+    }
+    systemctl(&["daemon-reload"])?;
+    Ok(())
+}
+
 /// Last few transcripts (newest last) and the last error line from the service log.
 pub fn recent_log() -> (Vec<String>, Option<String>) {
     let Ok(o) = Command::new("journalctl")

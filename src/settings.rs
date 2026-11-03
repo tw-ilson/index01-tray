@@ -17,6 +17,9 @@ type ScanResult = Result<Vec<(String, String)>, String>;
 pub struct Settings {
     cfg: Config,
     saved: Config,
+    /// Ring button mode id from service::MODES.
+    mode: &'static str,
+    saved_mode: &'static str,
     models: Vec<String>,
     state: String,
     transcripts: Vec<String>,
@@ -62,6 +65,8 @@ impl Settings {
         Settings {
             saved: cfg.clone(),
             cfg,
+            mode: service::ring_mode(),
+            saved_mode: service::ring_mode(),
             models: service::local_models(),
             state: service::state(),
             transcripts,
@@ -77,10 +82,15 @@ impl Settings {
     }
 
     fn save(&mut self) {
-        let res = self.cfg.save().and_then(|_| service::reload_if_active());
+        let res = self
+            .cfg
+            .save()
+            .and_then(|_| service::set_ring_mode(self.mode))
+            .and_then(|_| service::reload_if_active());
         self.message = Some(match res {
             Ok(()) => {
                 self.saved = self.cfg.clone();
+                self.saved_mode = self.mode;
                 (
                     true,
                     if self.state == "active" {
@@ -242,9 +252,10 @@ impl Settings {
                 }
                 ui.horizontal(|ui| {
                     ui.set_min_height(34.0);
-                    let dirty = self.cfg != self.saved;
+                    let dirty = self.cfg != self.saved || self.mode != self.saved_mode;
                     if dirty && ui.button("Revert").clicked() {
                         self.cfg = self.saved.clone();
+                        self.mode = self.saved_mode;
                         self.message = None;
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -550,7 +561,30 @@ impl Settings {
 
         // Output
         style::group(ui, "Output", |ui| {
-            style::row(ui, true, "Paste into the focused window", None, |ui| {
+            style::row(
+                ui,
+                true,
+                "Ring button",
+                service::MODES.iter().find(|m| m.0 == self.mode).map(|m| m.2),
+                |ui| {
+                    let label = service::MODES
+                        .iter()
+                        .find(|m| m.0 == self.mode)
+                        .map_or(self.mode, |m| m.1);
+                    egui::ComboBox::from_id_salt("mode")
+                        .width(wide)
+                        .selected_text(label)
+                        .show_ui(ui, |ui| {
+                            for (id, l, _) in service::MODES {
+                                ui.selectable_value(&mut self.mode, id, l);
+                            }
+                        });
+                },
+            );
+            if self.mode != "dictate" {
+                return;
+            }
+            style::row(ui, false, "Paste into the focused window", None, |ui| {
                 let mut paste = self.cfg.flag("INDEX01_PASTE");
                 if style::switch(ui, &mut paste).changed() {
                     self.cfg.set_flag("INDEX01_PASTE", paste);
